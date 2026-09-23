@@ -427,8 +427,10 @@ export function isValidLocalImagePath(value: string): boolean {
     return false
   }
 
-  // UNC network paths (//host or \\host) are forbidden to prevent SMB/network leaks
-  if (/^[/\\]{2}/.test(trimmed)) {
+  // UNC network paths (//host, \\host) and NT/device namespaces (\??\, \\?\, \\.\)
+  // are forbidden to prevent SMB/network leaks. Any leading backslash that is
+  // not a drive-relative path is rejected.
+  if (/^[/\\]{2}/.test(trimmed) || /^\\\?\?\\/.test(trimmed) || /^\\(?![\w .-])/.test(trimmed)) {
     return false
   }
 

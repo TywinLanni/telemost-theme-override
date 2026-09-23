@@ -686,6 +686,16 @@ describe("background image schema & injection defense", () => {
     expect(schemaNs.backgroundImageValueSchema.safeParse("./wallpapers/my wall.jpg").success).toBe(true)
     expect(schemaNs.backgroundImageValueSchema.safeParse("wallpaper (1).jpg").success).toBe(true)
     expect(schemaNs.backgroundImageValueSchema.safeParse("обои/чат.jpg").success).toBe(true)
+
+    // Drive-relative path (single leading backslash, real path segment follows).
+    // Distinct from the device/NT namespaces rejected below: it never leaves the
+    // current drive, so it cannot reach an SMB share.
+    expect(schemaNs.backgroundImageValueSchema.safeParse("\\Users\\me\\wall.jpg").success).toBe(true)
+
+    // Every gradient function the CSS spec defines, including the repeating-*
+    // family, must survive the schema — resolveBackgroundImage relies on the
+    // same validator to pass gradients through instead of reading them as files.
+    expect(schemaNs.backgroundImageValueSchema.safeParse("repeating-linear-gradient(red, blue 10px)").success).toBe(true)
   })
 
   test("rejects CSS injection payloads in image field", () => {
@@ -705,6 +715,14 @@ describe("background image schema & injection defense", () => {
     expect(schemaNs.backgroundImageValueSchema.safeParse("file://attacker.example/share/x.png").success).toBe(false)
     expect(schemaNs.backgroundImageValueSchema.safeParse("//attacker.example/y.png").success).toBe(false)
     expect(schemaNs.backgroundImageValueSchema.safeParse("\\\\attacker.example\\share\\x.png").success).toBe(false)
+
+    // NT object-manager and Win32 device namespaces. `\??\UNC\host\share` and
+    // `\\?\UNC\host\share` are alternate spellings of a UNC path that reach SMB
+    // just like `\\host\share`, and `\\.\` opens device objects (named pipes).
+    // They must not be accepted merely because they are not literally `\\host`.
+    expect(schemaNs.backgroundImageValueSchema.safeParse("\\??\\UNC\\h\\s\\x.png").success).toBe(false)
+    expect(schemaNs.backgroundImageValueSchema.safeParse("\\\\?\\UNC\\h\\s\\x.png").success).toBe(false)
+    expect(schemaNs.backgroundImageValueSchema.safeParse("\\\\.\\pipe\\x").success).toBe(false)
 
     // Malicious gradient tails (image-set, cross-fade, etc.)
     expect(

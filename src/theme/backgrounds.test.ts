@@ -3,9 +3,10 @@ import { mkdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { loadTheme } from "../config"
-import { desktopThemeSchema, mappingConfigSchema } from "../schema"
+import { desktopThemeSchema, isValidGradientValue, mappingConfigSchema } from "../schema"
 import { buildCss } from "./generate"
 import {
+  assertLocalFilePath,
   BACKGROUND_SURFACE_SELECTORS,
   normalizeSurfaceKey,
   renderBackgroundDeclarations,
@@ -287,6 +288,122 @@ describe("Local Image File Resolution & Base64 Encoding", () => {
     }
 
     await rm(testDir, { recursive: true, force: true })
+  })
+})
+
+describe("Gradient Passthrough in resolveBackgroundImage", () => {
+  // Regression guard: resolveBackgroundImage used to recognise gradients by a
+  // hardcoded prefix list (linear-/radial-/conic-gradient) that omitted the
+  // `repeating-*` family. Those values pass `backgroundImageValueSchema`, so a
+  // theme.json could hold one, but resolution treated it as a relative file
+  // name and readFile blew up with ENOENT. It now delegates to the very same
+  // `isValidGradientValue` the schema uses, so "accepted by schema" and
+  // "resolvable" can no longer drift apart.
+  const repeatingGradients = [
+    ["repeating-linear-gradient(red, blue 10px)"],
+    ["repeating-radial-gradient(circle, red, blue 10px)"],
+    ["repeating-conic-gradient(red 0deg, blue 10deg)"],
+  ] as const
+
+  test.each(repeatingGradients)("passes %s through unchanged instead of reading it as a file", async (gradient) => {
+    const testDir = join(tmpdir(), `tto-bg-gradient-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+    await mkdir(testDir, { recursive: true })
+    try {
+      // The schema and the resolver must agree: anything the schema admits as a
+      // gradient must survive resolution untouched.
+      expect(isValidGradientValue(gradient)).toBe(true)
+      expect(await resolveBackgroundImage(gradient, testDir)).toBe(gradient)
+    } finally {
+      await rm(testDir, { recursive: true, force: true })
+    }
+  })
+
+  test("non-repeating gradients keep passing through (no regression in the original behaviour)", async () => {
+    const testDir = join(tmpdir(), `tto-bg-gradient-plain-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+    await mkdir(testDir, { recursive: true })
+    try {
+      const gradient = "linear-gradient(rgba(255, 255, 255, 0.8), rgba(0, 0, 0, 0.2))"
+      expect(await resolveBackgroundImage(gradient, testDir)).toBe(gradient)
+    } finally {
+      await rm(testDir, { recursive: true, force: true })
+    }
+  })
+
+  test("a value that merely looks gradient-ish is still resolved as a file path", async () => {
+    // Guards against the passthrough being widened into a prefix sniff: an
+    // unbalanced/!-bearing value fails isValidGradientValue, so it must fall
+    // through to file resolution (and fail there) rather than reach CSS raw.
+    const testDir = join(tmpdir(), `tto-bg-gradient-fake-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+    await mkdir(testDir, { recursive: true })
+    try {
+      const notAGradient = "repeating-linear-gradient(red, blue"
+      expect(isValidGradientValue(notAGradient)).toBe(false)
+      await expect(resolveBackgroundImage(notAGradient, testDir)).rejects.toThrow(
+        /cannot resolve background image/,
+      )
+    } finally {
+      await rm(testDir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("assertLocalFilePath network & device path rejection", () => {
+  // Defense in depth behind the schema. These strings are never opened: the
+  // assertion is a pure string check that runs before any readFile, which is
+  // exactly why it is safe to assert on them here — no SMB/device I/O occurs.
+  const rejected = [
+    ["UNC share (backslashes)", "\\\\host\\share\\x.png"],
+    ["UNC share (forward slashes)", "//host/share/x.png"],
+    ["Win32 extended-length UNC", "\\\\?\\UNC\\h\\s\\x.png"],
+    ["Win32 device namespace (named pipe)", "\\\\.\\pipe\\x"],
+    ["NT object-manager UNC", "\\??\\UNC\\h\\s\\x.png"],
+    // path.resolve("C:\\base", "\\??\\UNC\\h\\s\\x.png") === "C:\\??\\UNC\\h\\s\\x.png":
+    // the NT prefix survives resolution buried mid-path, so a startsWith check
+    // alone would miss it. It must be rejected wherever it appears.
+    ["NT prefix after path.resolve buried mid-path", "C:\\??\\UNC\\h\\s\\x.png"],
+  ] as const
+
+  test.each(rejected)("rejects %s", (_label, filePath) => {
+    expect(() => assertLocalFilePath(filePath)).toThrow(
+      /background image must be a local file, not a network or device path/,
+    )
+  })
+
+  const accepted = [
+    ["plain Windows path", "C:\\Users\\me\\wall.jpg"],
+    ["Windows path with forward slashes, spaces and parens", "C:/Users/me/my wall (1).jpg"],
+    ["POSIX-style absolute path", "/tmp/x.png"],
+  ] as const
+
+  test.each(accepted)("accepts %s", (_label, filePath) => {
+    expect(() => assertLocalFilePath(filePath)).not.toThrow()
+  })
+
+  test("error message names the offending path so the user can fix their theme.json", () => {
+    expect(() => assertLocalFilePath("\\\\host\\share\\x.png")).toThrow(
+      "background image must be a local file, not a network or device path: \\\\host\\share\\x.png",
+    )
+  })
+
+  test("resolveBackgroundImage rejects an NT-namespace path before touching the filesystem", async () => {
+    const testDir = join(tmpdir(), `tto-bg-nt-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+    await mkdir(testDir, { recursive: true })
+    try {
+      // Host is the reserved-by-RFC-2606 `invalid.invalid` so that even a total
+      // failure of the guard could not resolve to a reachable SMB server.
+      const ntPath = "\\??\\UNC\\invalid.invalid\\share\\x.png"
+      await expect(resolveBackgroundImage(ntPath, testDir)).rejects.toThrow(
+        /background image must be a local file, not a network or device path/,
+      )
+      // The guard fires before readFile, so the failure is NOT reported through
+      // the generic "cannot resolve background image ... : ENOENT" wrapper that
+      // surrounds the I/O. That distinction is the whole point of the check.
+      await expect(resolveBackgroundImage(ntPath, testDir)).rejects.not.toThrow(
+        /cannot resolve background image/,
+      )
+    } finally {
+      await rm(testDir, { recursive: true, force: true })
+    }
   })
 })
 

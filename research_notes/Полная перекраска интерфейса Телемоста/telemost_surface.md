@@ -7,6 +7,8 @@
 
 ## 1. Где живёт веб-клиент и его ассеты (ПРОВЕРЕНО)
 
+> Локальные копии `telemost_home.html` и `telemost_ui_chunk.js` из репозитория удалены (проприетарный код Яндекса, проекту не нужен); при необходимости их можно заново скачать по URL ниже. В репозитории остался только `evidence/telemost_ui.css` — на нём закреплён воспроизводимый аудит цветов (`scripts/audit-colors.ts`).
+
 - `https://telemost.yandex.ru/` отдаёт SPA-оболочку (сохранена локально как `research_notes/Полная перекраска интерфейса Телемоста/evidence/telemost_home.html`, 98 686 байт).
 - Все статические ассеты версионируются и лежат на yastatic:
   `https://yastatic.net/s3/chat-static/telemessenger/_/211.2.0/web/`

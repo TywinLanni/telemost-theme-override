@@ -190,6 +190,38 @@ describe("formatPresetList", () => {
     const formatted = formatPresetList(presets)
     expect(formatted).toContain("#123456")
   })
+
+  test("renders the errors block for a PresetListResult but not for a bare preset array", () => {
+    // formatPresetList accepts two shapes. PresetListResult is now a plain
+    // object (it used to be an Array subclass carrying extra properties), so the
+    // discrimination is `!Array.isArray`. Both shapes must still render the same
+    // table; only the result shape can surface load errors.
+    const withErrors = formatPresetList({
+      presets: dummyPresets,
+      errors: [{ path: "C:\\AppData\\presets\\corrupt.json", message: "Unexpected token in JSON" }],
+    })
+
+    expect(withErrors).toContain("Errors loading preset files:")
+    expect(withErrors).toContain("! C:\\AppData\\presets\\corrupt.json: Unexpected token in JSON")
+    // The preset table is unaffected by the presence of errors.
+    expect(withErrors).toContain("Dracula Vampire")
+    expect(withErrors).toContain("Usage:")
+
+    // A bare array carries no errors, so the block must be absent entirely —
+    // not rendered empty.
+    const bareArray = formatPresetList(dummyPresets)
+    expect(bareArray).not.toContain("Errors loading preset files:")
+    expect(bareArray).toContain("Dracula Vampire")
+    expect(bareArray).toContain("Usage:")
+  })
+
+  test("an empty errors array renders no errors block", () => {
+    // Guards the `errors.length > 0` condition: a result object that simply has
+    // nothing to report must look identical to the bare-array rendering.
+    const emptyErrors = formatPresetList({ presets: dummyPresets, errors: [] })
+    expect(emptyErrors).not.toContain("Errors loading preset files:")
+    expect(emptyErrors).toBe(formatPresetList(dummyPresets))
+  })
 })
 
 /* ------------------------------------------------------------------ *
@@ -294,17 +326,17 @@ describe("listPresets", () => {
       repoDir: customRepoDir,
     })
 
-    expect(list.length).toBeGreaterThanOrEqual(9)
+    expect(list.presets.length).toBeGreaterThanOrEqual(9)
     const builtinIds = Object.keys(BUILTIN_PRESETS)
     for (const id of builtinIds) {
-      const found = list.find((p) => p.id === id)
+      const found = list.presets.find((p) => p.id === id)
       expect(found).toBeDefined()
       expect(found?.source).toBe("builtin")
       expect(found?.theme).toBeDefined()
     }
     // Result is sorted alphabetically by name
-    for (let i = 1; i < list.length; i++) {
-      expect(list[i]!.name.localeCompare(list[i - 1]!.name)).toBeGreaterThanOrEqual(0)
+    for (let i = 1; i < list.presets.length; i++) {
+      expect(list.presets[i]!.name.localeCompare(list.presets[i - 1]!.name)).toBeGreaterThanOrEqual(0)
     }
   })
 
@@ -324,7 +356,7 @@ describe("listPresets", () => {
       repoDir: customRepoDir,
     })
 
-    const repoPreset = list.find((p) => p.id === "repo-exclusive")
+    const repoPreset = list.presets.find((p) => p.id === "repo-exclusive")
     expect(repoPreset).toBeDefined()
     expect(repoPreset?.source).toBe("repo")
     expect(repoPreset?.name).toBe("Repo Exclusive Theme")
@@ -347,7 +379,7 @@ describe("listPresets", () => {
       repoDir: customRepoDir,
     })
 
-    const found = list.find((p) => p.id === "my-user-preset")
+    const found = list.presets.find((p) => p.id === "my-user-preset")
     expect(found).toBeDefined()
     expect(found?.source).toBe("user")
     expect(found?.path).toBe(join(userDir, "my-user-preset.json"))
@@ -368,7 +400,7 @@ describe("listPresets", () => {
       repoDir: customRepoDir,
     })
 
-    const nord = list.find((p) => p.id === "nord")
+    const nord = list.presets.find((p) => p.id === "nord")
     expect(nord).toBeDefined()
     expect(nord?.source).toBe("user")
     expect(nord?.name).toBe("Custom User Nord Overridden")
@@ -389,9 +421,9 @@ describe("listPresets", () => {
       repoDir: customRepoDir,
     })
 
-    expect(list.length).toBeGreaterThanOrEqual(9)
-    expect(list.find((p) => p.id === "corrupt")).toBeUndefined()
-    expect(list.find((p) => p.id === "invalid")).toBeUndefined()
+    expect(list.presets.length).toBeGreaterThanOrEqual(9)
+    expect(list.presets.find((p) => p.id === "corrupt")).toBeUndefined()
+    expect(list.presets.find((p) => p.id === "invalid")).toBeUndefined()
     expect(list.errors.length).toBeGreaterThanOrEqual(2)
     expect(list.errors.some((e) => e.path.includes("corrupt.json"))).toBe(true)
     expect(list.errors.some((e) => e.path.includes("invalid.json"))).toBe(true)

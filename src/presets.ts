@@ -45,9 +45,9 @@ export interface PresetFileError {
   readonly message: string
 }
 
-export interface PresetListResult extends Array<PresetInfo> {
-  readonly presets: PresetInfo[]
-  readonly errors: PresetFileError[]
+export interface PresetListResult {
+  readonly presets: readonly PresetInfo[]
+  readonly errors: readonly PresetFileError[]
 }
 
 function describeIssues(issues: ReadonlyArray<z.core.$ZodIssue>): string {
@@ -57,18 +57,17 @@ function describeIssues(issues: ReadonlyArray<z.core.$ZodIssue>): string {
 /**
  * Formats a list of presets into a human-readable table.
  */
+function isPresetListResult(value: ReadonlyArray<PresetInfo> | PresetListResult): value is PresetListResult {
+  return !Array.isArray(value)
+}
+
 export function formatPresetList(
   presetsOrResult: ReadonlyArray<PresetInfo> | PresetListResult,
   activeId?: string,
 ): string {
-  const presets =
-    Array.isArray(presetsOrResult) && "presets" in presetsOrResult
-      ? (presetsOrResult as PresetListResult).presets
-      : presetsOrResult
-  const errors =
-    Array.isArray(presetsOrResult) && "errors" in presetsOrResult
-      ? (presetsOrResult as PresetListResult).errors
-      : []
+  const { presets, errors }: PresetListResult = isPresetListResult(presetsOrResult)
+    ? presetsOrResult
+    : { presets: presetsOrResult, errors: [] }
 
   const lines: string[] = []
   lines.push("Available theme presets:")
@@ -238,10 +237,7 @@ export async function listPresets(options: PresetOptions = {}): Promise<PresetLi
   }
 
   const sorted = Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name))
-  return Object.assign(sorted, {
-    presets: sorted,
-    errors,
-  }) as PresetListResult
+  return { presets: sorted, errors }
 }
 
 /**
