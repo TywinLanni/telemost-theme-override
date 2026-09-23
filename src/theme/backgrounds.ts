@@ -245,6 +245,20 @@ export function renderBackgroundDeclarations(props: BackgroundProperties): Array
  * Resolves an image path or URL. If it points to a local file on disk,
  * reads the file and encodes it as a base64 Data URI.
  */
+/**
+ * Defense in depth behind the schema: a background file must be a plain local
+ * path. UNC shares (`\\host\share`), Win32 device/extended paths (`\\?\`, `\\.\`)
+ * and NT object-manager paths (`\??\`) are rejected because reading them can
+ * reach the network (SMB). `path.resolve` turns a relative-looking `\??\UNC\…`
+ * into `C:\??\UNC\…`, so the `\??\` segment is rejected anywhere in the path.
+ */
+export function assertLocalFilePath(filePath: string): void {
+  const normalized = filePath.replace(/\//g, "\\")
+  if (normalized.startsWith("\\\\") || normalized.includes("\\??\\")) {
+    throw new Error(`background image must be a local file, not a network or device path: ${filePath}`)
+  }
+}
+
 export async function resolveBackgroundImage(image: string, baseDir: string): Promise<string> {
   const trimmed = image.trim()
 
@@ -252,13 +266,8 @@ export async function resolveBackgroundImage(image: string, baseDir: string): Pr
     throw new Error(`remote image URLs are forbidden for security and privacy: ${trimmed}`)
   }
 
-  // Skip existing Data URIs and CSS gradients
-  if (
-    trimmed.startsWith("data:") ||
-    trimmed.startsWith("linear-gradient(") ||
-    trimmed.startsWith("radial-gradient(") ||
-    trimmed.startsWith("conic-gradient(")
-  ) {
+  // Skip existing Data URIs and CSS gradients (same validator as the schema)
+  if (trimmed.startsWith("data:") || isValidGradientValue(trimmed)) {
     return trimmed
   }
 
@@ -274,6 +283,7 @@ export async function resolveBackgroundImage(image: string, baseDir: string): Pr
   }
 
   const filePath = isAbsolute(cleanPath) ? cleanPath : resolve(baseDir, cleanPath)
+  assertLocalFilePath(filePath)
 
   try {
     const buffer = await readFile(filePath)

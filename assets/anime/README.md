@@ -5,7 +5,7 @@ This directory contains illustrations and textures created for the "Anime Waifu 
 ## Licensing & Origin
 
 - **Generation Tool & Model**: Generated using Stable Diffusion XL 1.0 (SDXL 1.0 base + refiner) via local ComfyUI/WebUI.
-- **License**: Creative Commons Zero 1.0 Universal (CC0 1.0) / Public Domain dedication. Under the CreativeML Open RAIL++-M model terms, the model authors claim no rights to generated outputs. The creator of these prompt outputs irrevocably dedicates all rights in the generated images to the public domain worldwide under CC0. Free to use, modify, embed, and redistribute without restriction.
+- **License**: Creative Commons Zero 1.0 Universal (CC0 1.0) / Public Domain dedication. Under the CreativeML Open RAIL++-M model terms, the model authors claim no rights to generated outputs. The creator of these prompt outputs irrevocably dedicates all rights in the generated images to the public domain worldwide under CC0. Free to use, modify, embed, and redistribute, subject only to the use-based restrictions the model license attaches to outputs ("No use of the output can contravene any provision as stated in the License", CreativeML Open RAIL++-M, Attachment A — see https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/blob/main/LICENSE.md).
 - **Formats**:
   - `call-anime-girl.jpg`: JPEG artwork for call background.
   - `chat-anime-girl.jpg`: JPEG artwork for conversation background.

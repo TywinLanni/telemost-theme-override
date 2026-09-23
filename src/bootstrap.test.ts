@@ -391,6 +391,31 @@ describe("bootstrap() theme and preset resolution", () => {
     expect(css).not.toContain('url("bg.png")')
   })
 
+  test("end-to-end: a repeating gradient in theme.json bootstraps and reaches CSS verbatim", async () => {
+    // Regression: `repeating-linear-gradient(...)` is accepted by
+    // backgroundImageValueSchema, but resolveBackgroundImage only recognised the
+    // non-repeating prefixes, so it fell through to readFile and bootstrap died
+    // with "cannot resolve background images for theme". The user-visible
+    // contract is: if the schema accepts the theme, bootstrap must load it.
+    const gradient = "repeating-linear-gradient(red, blue 10px)"
+    const themed = {
+      ...DEFAULT_THEME,
+      backgrounds: {
+        chat: gradient,
+      },
+    }
+    await writeFile(themeFilePath(env), JSON.stringify(themed, null, 2), "utf8")
+
+    const result = await bootstrap(env)
+    expect(result.theme.backgrounds?.chat).toBeDefined()
+
+    const css = buildCss({ theme: result.theme, mapping: result.mapping })
+    // Emitted as a bare gradient, never wrapped in url(...) and never turned
+    // into a data URI — a gradient is a CSS value, not a file.
+    expect(css).toContain(`background-image: ${gradient};`)
+    expect(css).not.toContain(`url("${gradient}")`)
+  })
+
   test("throws BootstrapError when local background image file in theme.json does not exist", async () => {
     const themed = {
       ...DEFAULT_THEME,
