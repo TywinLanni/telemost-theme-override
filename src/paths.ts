@@ -27,6 +27,10 @@ export function appConfigFilePath(env: NodeJS.ProcessEnv = process.env): string 
   return join(configDir(env), "config.json")
 }
 
+export function presetsDir(env: NodeJS.ProcessEnv = process.env): string {
+  return join(configDir(env), "presets")
+}
+
 /**
  * Candidate install locations for Telemost, most specific first.
  *

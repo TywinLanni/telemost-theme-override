@@ -100,8 +100,11 @@ export async function waitForAppStyles(session: CdpSession, mapping: MappingConf
  * This is the guard against silent breakage: if a Telemost update renames a
  * token, the canary shows up in `missing` and the CLI reports it loudly.
  */
-export async function verify(session: CdpSession, mapping: MappingConfig): Promise<VerificationReport> {
-  const tokens = JSON.stringify(mapping.canaryTokens)
+export type CdpEvaluator = Pick<CdpSession, "evaluate">
+
+export async function verify(session: CdpEvaluator, mapping: MappingConfig): Promise<VerificationReport> {
+  const allTokens = [...new Set([...mapping.canaryTokens, ...mapping.semanticCanaries])].sort()
+  const tokens = JSON.stringify(allTokens)
   const id = JSON.stringify(STYLE_ELEMENT_ID)
 
   const expression = `(() => {

@@ -11,6 +11,8 @@
     "doctor": "bun run src/main.ts doctor",
     "sync-defaults": "bun run scripts/sync-defaults.ts",
     "recolor-icon": "bun run scripts/recolor-icon.ts",
+    "audit-colors": "bun run scripts/audit-colors.ts",
+    "build-anime-preset": "bun run scripts/build-anime-theme.ts",
     "build": "bun run scripts/build.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test"

@@ -5,6 +5,7 @@ dist/
 *.log
 .DS_Store
 out.css
+reports/telemost_ui_color_inventory.json
 *-test.json
 *-test.css
 *-probe.ts

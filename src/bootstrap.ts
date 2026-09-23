@@ -1,11 +1,14 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { existsSync } from "node:fs"
+import { dirname } from "node:path"
 import { z } from "zod"
 
-import { appConfigFilePath, configDir, findTelemost, telemostCandidates, themeFilePath } from "./paths"
+import { appConfigFilePath, configDir, findTelemost, presetsDir, telemostCandidates, themeFilePath } from "./paths"
 import { desktopThemeSchema, mappingConfigSchema, type MappingConfig } from "./schema"
 import { DEFAULT_THEME } from "./defaults/theme"
 import { DEFAULT_MAPPING } from "./defaults/mapping"
+import { resolvePreset, PresetError } from "./presets"
+import { resolveThemeBackgrounds } from "./theme/backgrounds"
 
 export type DesktopTheme = z.infer<typeof desktopThemeSchema>
 
@@ -47,6 +50,8 @@ export const userConfigSchema = z.object({
   launchTimeoutSeconds: z.number().int().positive().default(45),
   /** See `consoleModeSchema`. */
   hideConsole: consoleModeSchema.default("auto"),
+  /** Name, ID, or path of active theme preset (optional; defaults to theme.json). */
+  preset: z.string().optional(),
 })
 
 export type UserConfig = z.infer<typeof userConfigSchema>
@@ -55,15 +60,21 @@ function describeIssues(issues: ReadonlyArray<z.core.$ZodIssue>): string {
   return issues.map((issue) => `  - ${issue.path.join(".") || "<root>"}: ${issue.message}`).join("\n")
 }
 
+export interface BootstrapOptions {
+  readonly preset?: string
+}
+
 export interface BootstrapResult {
   readonly directory: string
   readonly themePath: string
   readonly configPath: string
+  readonly presetsPath: string
   readonly createdTheme: boolean
   readonly createdConfig: boolean
   readonly theme: DesktopTheme
   readonly config: UserConfig
   readonly mapping: MappingConfig
+  readonly activePresetName?: string
 }
 
 /**
@@ -73,12 +84,17 @@ export interface BootstrapResult {
  * Subsequent runs read whatever the user left there — files are never
  * overwritten, so hand edits survive upgrades of this tool.
  */
-export async function bootstrap(env: NodeJS.ProcessEnv = process.env): Promise<BootstrapResult> {
+export async function bootstrap(
+  env: NodeJS.ProcessEnv = process.env,
+  options: BootstrapOptions = {},
+): Promise<BootstrapResult> {
   const directory = configDir(env)
   const themePath = themeFilePath(env)
   const configPath = appConfigFilePath(env)
+  const presetsPath = presetsDir(env)
 
   await mkdir(directory, { recursive: true })
+  await mkdir(presetsPath, { recursive: true })
 
   let createdTheme = false
   if (!existsSync(themePath)) {
@@ -105,7 +121,6 @@ export async function bootstrap(env: NodeJS.ProcessEnv = process.env): Promise<B
     createdConfig = true
   }
 
-  const theme = await readValidated(themePath, desktopThemeSchema, "theme")
   const config = await readValidated(configPath, userConfigSchema, "config")
 
   if (!existsSync(config.telemostExe)) {
@@ -114,11 +129,49 @@ export async function bootstrap(env: NodeJS.ProcessEnv = process.env): Promise<B
     )
   }
 
+  let theme: DesktopTheme
+  let activeThemePath = themePath
+  let activePresetName: string | undefined
+
+  const requestedPreset = options.preset ?? config.preset
+  if (requestedPreset && requestedPreset.trim().length > 0 && requestedPreset.trim().toLowerCase() !== "custom") {
+    try {
+      const resolved = await resolvePreset(requestedPreset, { env })
+      theme = resolved.theme
+      activeThemePath = resolved.path ?? themePath
+      activePresetName = resolved.name
+    } catch (error) {
+      if (error instanceof PresetError) {
+        throw new BootstrapError(error.message)
+      }
+      throw error
+    }
+  } else {
+    theme = await readValidated(themePath, desktopThemeSchema, "theme")
+    try {
+      theme = await resolveThemeBackgrounds(theme, dirname(themePath))
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      throw new BootstrapError(`cannot resolve background images for theme ${themePath}: ${reason}`)
+    }
+  }
+
   // The token mapping is an implementation detail of how Orb is structured,
   // not a user preference, so it stays compiled in rather than on disk.
   const mapping = mappingConfigSchema.parse(DEFAULT_MAPPING)
 
-  return { directory, themePath, configPath, createdTheme, createdConfig, theme, config, mapping }
+  return {
+    directory,
+    themePath: activeThemePath,
+    configPath,
+    presetsPath,
+    createdTheme,
+    createdConfig,
+    theme,
+    config,
+    mapping,
+    activePresetName,
+  }
 }
 
 async function readValidated<T>(path: string, schema: z.ZodType<T>, label: string): Promise<T> {

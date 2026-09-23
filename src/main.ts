@@ -8,6 +8,16 @@ import { buildCss } from "./theme/generate"
 import { CdpSession, fetchVersion, waitForPageTarget, type CdpTarget } from "./cdp/client"
 import { applyToLiveDocument, buildAgentSource, verify, waitForAppStyles } from "./inject"
 import { isDebuggerUp, launchTelemost } from "./launcher"
+import {
+  exportPreset,
+  formatPresetList,
+  importPreset,
+  listPresets,
+  PresetError,
+  resolvePreset,
+  savePreset,
+} from "./presets"
+import type { DesktopTheme } from "./schema"
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 
@@ -23,13 +33,19 @@ Usage:
   bun run apply -- --once       inject and exit
   bun run build-css             print the generated CSS, touch nothing
   bun run doctor                report what is currently running and resolvable
+  bun run main.ts presets       list available presets
 
 Options:
-  --theme <path>    seed colors (default: config/theme.json)
+  --preset <name>   use theme preset (e.g. nord, tokyo-night, emerald, etc.)
+  --theme <path>    seed colors file (default: config/theme.json)
   --mapping <path>  token mapping (default: config/mapping.json)
   --port <number>   CDP port on 127.0.0.1 (default: 9333)
   --exe <path>      Telemost executable
-  --out <path>      with build-css: write to a file instead of stdout
+  --out <path>      with build-css/export: write to a file instead of stdout
+  --list-presets    list available presets
+  --save-preset <n> save current theme as a preset
+  --import-preset <p> import a theme JSON file
+  --export-preset <n> export self-contained theme JSON
   --once            do not stay attached
   --help            this text
 `
@@ -38,9 +54,20 @@ function isTelemostPage(target: CdpTarget): boolean {
   return target.url.startsWith("ychat://") || target.url.includes("telemost")
 }
 
+async function resolveTheme(overrides: ReturnType<typeof readOverrides>, defaultThemeFile: string): Promise<DesktopTheme> {
+  if (overrides.preset) {
+    const resolved = await resolvePreset(overrides.preset, { repoDir: ROOT })
+    return resolved.theme
+  }
+  return loadTheme(defaultThemeFile)
+}
+
 async function commandBuildCss(overrides: ReturnType<typeof readOverrides>, out: string | undefined): Promise<void> {
   const config = buildAppConfig(ROOT, overrides)
-  const [theme, mapping] = await Promise.all([loadTheme(config.themeFile), loadMapping(config.mappingFile)])
+  // The parsed theme cross-validates rule bindings (plan §10 per-mode value
+  // presence), so it must load before the mapping.
+  const theme = await resolveTheme(overrides, config.themeFile)
+  const mapping = await loadMapping(config.mappingFile, theme)
   const css = buildCss({ theme, mapping })
 
   if (out) {
@@ -71,7 +98,9 @@ async function commandDoctor(overrides: ReturnType<typeof readOverrides>): Promi
 
   const session = await CdpSession.connect(target.webSocketDebuggerUrl ?? "")
   try {
-    const mapping = await loadMapping(config.mappingFile)
+    // Bindings are cross-validated against the theme, so load it first.
+    const theme = await resolveTheme(overrides, config.themeFile)
+    const mapping = await loadMapping(config.mappingFile, theme)
     const report = await verify(session, mapping)
     console.log(`root classes  : ${report.rootClasses}`)
     console.log(`override tag  : ${report.styleTagPresent ? "present" : "absent"}`)
@@ -90,9 +119,11 @@ async function commandDoctor(overrides: ReturnType<typeof readOverrides>): Promi
 
 async function commandApply(overrides: ReturnType<typeof readOverrides>, once: boolean): Promise<void> {
   const config = buildAppConfig(ROOT, overrides)
-  const [theme, mapping] = await Promise.all([loadTheme(config.themeFile), loadMapping(config.mappingFile)])
+  const theme = await resolveTheme(overrides, config.themeFile)
+  const mapping = await loadMapping(config.mappingFile, theme)
   const css = buildCss({ theme, mapping })
-  console.log(`theme         : ${theme.name} (${theme.id})`)
+  const presetLabel = overrides.preset ? ` [preset: ${overrides.preset}]` : ""
+  console.log(`theme         : ${theme.name} (${theme.id})${presetLabel}`)
 
   const launch = await launchTelemost(config, {
     onRestart: () => console.log("Telemost      : running without debugging — restarting to attach"),
@@ -161,8 +192,33 @@ async function commandApply(overrides: ReturnType<typeof readOverrides>, once: b
   }
 }
 
-function readOverrides(values: Record<string, string | boolean | undefined>): {
+export const MAIN_CLI_OPTIONS = {
+  theme: { type: "string" },
+  preset: { type: "string" },
+  mapping: { type: "string" },
+  port: { type: "string" },
+  exe: { type: "string" },
+  out: { type: "string" },
+  "list-presets": { type: "boolean", default: false },
+  presets: { type: "boolean", default: false },
+  "save-preset": { type: "string" },
+  "import-preset": { type: "string" },
+  "export-preset": { type: "string" },
+  once: { type: "boolean", default: false },
+  help: { type: "boolean", default: false },
+} as const
+
+export function parseMainArgs(args: string[]) {
+  return parseArgs({
+    args,
+    allowPositionals: true,
+    options: MAIN_CLI_OPTIONS,
+  })
+}
+
+export function readOverrides(values: Record<string, string | boolean | undefined>): {
   theme?: string
+  preset?: string
   mapping?: string
   port?: number
   exe?: string
@@ -173,6 +229,7 @@ function readOverrides(values: Record<string, string | boolean | undefined>): {
 
   return {
     theme: typeof values.theme === "string" ? values.theme : undefined,
+    preset: typeof values.preset === "string" ? values.preset : undefined,
     mapping: typeof values.mapping === "string" ? values.mapping : undefined,
     port,
     exe: typeof values.exe === "string" ? values.exe : undefined,
@@ -181,22 +238,46 @@ function readOverrides(values: Record<string, string | boolean | undefined>): {
 }
 
 async function main(): Promise<void> {
-  const { values, positionals } = parseArgs({
-    args: process.argv.slice(2),
-    allowPositionals: true,
-    options: {
-      theme: { type: "string" },
-      mapping: { type: "string" },
-      port: { type: "string" },
-      exe: { type: "string" },
-      out: { type: "string" },
-      once: { type: "boolean", default: false },
-      help: { type: "boolean", default: false },
-    },
-  })
+  const { values, positionals } = parseMainArgs(process.argv.slice(2))
 
   if (values.help) {
     process.stdout.write(HELP)
+    return
+  }
+
+  if (values["list-presets"] || values.presets || positionals[0] === "presets") {
+    const presets = await listPresets({ repoDir: ROOT })
+    console.log(formatPresetList(presets))
+    return
+  }
+
+  if (values["save-preset"]) {
+    const nameOrId = values["save-preset"]
+    const sourceTheme = resolve(ROOT, typeof values.theme === "string" ? values.theme : "config/theme.json")
+    const result = await savePreset(sourceTheme, nameOrId)
+    console.log(`Saved theme as preset "${result.preset.name}" (${result.preset.id}):\n  ${result.path}`)
+    return
+  }
+
+  if (values["import-preset"]) {
+    const sourceFile = values["import-preset"]
+    const result = await importPreset(sourceFile)
+    console.log(`Imported preset "${result.preset.name}" (${result.preset.id}):\n  ${result.path}`)
+    return
+  }
+
+  if (values["export-preset"]) {
+    const presetName = values["export-preset"]
+    const result = await exportPreset(
+      presetName,
+      typeof values.out === "string" ? values.out : undefined,
+      { repoDir: ROOT },
+    )
+    if (result.outPath) {
+      console.log(`Exported preset "${result.preset.name}" to:\n  ${result.outPath}`)
+    } else {
+      process.stdout.write(result.exportedJson)
+    }
     return
   }
 
@@ -219,8 +300,14 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error)
-  process.stderr.write(`\nerror: ${message}\n`)
-  process.exitCode = 1
-})
+if (import.meta.main) {
+  main().catch((error: unknown) => {
+    if (error instanceof ConfigError || error instanceof PresetError) {
+      process.stderr.write(`\nerror: ${error.message}\n`)
+    } else {
+      const message = error instanceof Error ? error.message : String(error)
+      process.stderr.write(`\nerror: ${message}\n`)
+    }
+    process.exitCode = 1
+  })
+}

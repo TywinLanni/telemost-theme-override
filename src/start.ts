@@ -13,25 +13,44 @@
 
 import { parseArgs } from "node:util"
 
-import { bootstrap, BootstrapError, type ConsoleMode, type UserConfig } from "./bootstrap"
+import { bootstrap, BootstrapError, userConfigSchema, type ConsoleMode, type UserConfig } from "./bootstrap"
 import { hideConsoleWindow, inspectConsole } from "./console-window"
 import { appConfigSchema } from "./schema"
 import { buildCss } from "./theme/generate"
 import { CdpSession, waitForPageTarget, type CdpTarget } from "./cdp/client"
 import { applyToLiveDocument, buildAgentSource, verify, waitForAppStyles } from "./inject"
 import { isDebuggerUp, launchTelemost } from "./launcher"
+import { existsSync } from "node:fs"
+import { readFile } from "node:fs/promises"
+import {
+  exportPreset,
+  formatPresetList,
+  importPreset,
+  listPresets,
+  PresetError,
+  savePreset,
+  setActivePreset,
+} from "./presets"
+import { appConfigFilePath, themeFilePath } from "./paths"
 
 const HELP = `telemost-start — Telemost with a custom theme
 
 Usage:
-  telemost-start              launch Telemost, apply the theme, keep it applied
-  telemost-start --once       apply once and exit (Telemost keeps running)
-  telemost-start --where      print the config file locations and exit
-  telemost-start --help       this text
+  telemost-start                          launch Telemost, apply active theme, keep it applied
+  telemost-start --preset <name|path>     launch with specified theme preset or JSON file
+  telemost-start --list-presets           list all available built-in and user presets
+  telemost-start --set-preset <name>      set the default active preset in config.json
+  telemost-start --save-preset <name>     save current theme.json as a new preset
+  telemost-start --import-preset <path>   import a theme JSON file into presets folder
+  telemost-start --export-preset <name>   export self-contained theme JSON (with --out <path>)
+  telemost-start --once                   apply once and exit (Telemost keeps running)
+  telemost-start --where                  print the config file locations and exit
+  telemost-start --help                   this text
 
 Configuration lives in:
-  %LOCALAPPDATA%\\TelemostThemeOverride\\theme.json    colors
-  %LOCALAPPDATA%\\TelemostThemeOverride\\config.json   Telemost path, port, console
+  %LOCALAPPDATA%\\TelemostThemeOverride\\theme.json    current custom colors
+  %LOCALAPPDATA%\\TelemostThemeOverride\\presets\\     user presets directory
+  %LOCALAPPDATA%\\TelemostThemeOverride\\config.json   Telemost path, port, console, active preset
 
 Both files are created on first run and never overwritten afterwards.
 Delete a file to regenerate it with defaults.
@@ -92,20 +111,31 @@ async function waitForTelemostExit(host: string, port: number, signal: AbortSign
   }
 }
 
-async function run(once: boolean): Promise<void> {
-  const boot = await bootstrap()
+async function run(once: boolean, preset?: string): Promise<void> {
+  const boot = await bootstrap(process.env, { preset })
 
   if (boot.createdTheme || boot.createdConfig) {
     console.log(`Created configuration in ${boot.directory}`)
-    if (boot.createdTheme) console.log(`  theme.json   colors — edit to taste`)
+    if (boot.createdTheme) {
+      if (boot.activePresetName) {
+        console.log(`  theme.json   colors (active preset "${boot.activePresetName}" overrides theme.json; switch back: --set-preset custom)`)
+      } else {
+        console.log(`  theme.json   colors — edit to taste`)
+      }
+    }
     if (boot.createdConfig) console.log(`  config.json  detected ${boot.config.telemostExe}`)
+    console.log(`  presets/     custom presets directory`)
     console.log("")
   }
 
   const appConfig = toAppConfig(boot.config, boot.themePath)
   const css = buildCss({ theme: boot.theme, mapping: boot.mapping })
 
-  console.log(`theme    : ${boot.theme.name} (${boot.theme.id})`)
+  if (boot.activePresetName) {
+    console.log(`theme    : ${boot.theme.name} (${boot.theme.id}) [active preset: "${boot.activePresetName}" — theme.json is ignored; switch back: --set-preset custom]`)
+  } else {
+    console.log(`theme    : ${boot.theme.name} (${boot.theme.id})`)
+  }
 
   const launch = await launchTelemost(appConfig, {
     onRestart: () =>
@@ -192,26 +222,100 @@ async function run(once: boolean): Promise<void> {
   }
 }
 
-async function main(): Promise<void> {
-  const { values } = parseArgs({
-    args: process.argv.slice(2),
-    options: {
-      once: { type: "boolean", default: false },
-      where: { type: "boolean", default: false },
-      help: { type: "boolean", default: false },
-    },
+export const START_CLI_OPTIONS = {
+  once: { type: "boolean", default: false },
+  where: { type: "boolean", default: false },
+  help: { type: "boolean", default: false },
+  preset: { type: "string" },
+  "list-presets": { type: "boolean", default: false },
+  presets: { type: "boolean", default: false },
+  "save-preset": { type: "string" },
+  "import-preset": { type: "string" },
+  "export-preset": { type: "string" },
+  "set-preset": { type: "string" },
+  out: { type: "string" },
+} as const
+
+export function parseStartArgs(args: string[]) {
+  return parseArgs({
+    args,
+    options: START_CLI_OPTIONS,
   })
+}
+
+async function main(): Promise<void> {
+  const { values } = parseStartArgs(process.argv.slice(2))
 
   if (values.help) {
     process.stdout.write(HELP)
     return
   }
 
+  if (values["list-presets"] || values.presets) {
+    const listResult = await listPresets()
+    let active: string | undefined
+    const configPath = appConfigFilePath()
+    if (existsSync(configPath)) {
+      try {
+        const raw = await readFile(configPath, "utf8")
+        const parsedJson = JSON.parse(raw)
+        const parsed = userConfigSchema.safeParse(parsedJson)
+        if (parsed.success) {
+          if (parsed.data.preset) {
+            active = parsed.data.preset.trim()
+          }
+        } else {
+          console.warn(`warning: invalid config at ${configPath}:\n  ${parsed.error.message}`)
+        }
+      } catch (err) {
+        console.warn(
+          `warning: cannot read config file at ${configPath}: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+    }
+    console.log(formatPresetList(listResult, active))
+    return
+  }
+
+  if (values["save-preset"]) {
+    const nameOrId = values["save-preset"]
+    const sourceTheme = themeFilePath()
+    const result = await savePreset(sourceTheme, nameOrId)
+    console.log(`Saved theme as preset "${result.preset.name}" (${result.preset.id}):\n  ${result.path}`)
+    return
+  }
+
+  if (values["import-preset"]) {
+    const sourceFile = values["import-preset"]
+    const result = await importPreset(sourceFile)
+    console.log(`Imported preset "${result.preset.name}" (${result.preset.id}):\n  ${result.path}`)
+    return
+  }
+
+  if (values["export-preset"]) {
+    const presetName = values["export-preset"]
+    const result = await exportPreset(presetName, typeof values.out === "string" ? values.out : undefined)
+    if (result.outPath) {
+      console.log(`Exported preset "${result.preset.name}" to:\n  ${result.outPath}`)
+    } else {
+      process.stdout.write(result.exportedJson)
+    }
+    return
+  }
+
+  if (values["set-preset"]) {
+    const presetName = values["set-preset"]
+    const result = await setActivePreset(presetName)
+    console.log(`Active preset set to "${result.preset}" in ${result.configPath}`)
+    return
+  }
+
   if (values.where) {
-    const { configDir, themeFilePath, appConfigFilePath } = await import("./paths")
+    const { configDir, themeFilePath, appConfigFilePath, presetsDir } = await import("./paths")
     const ownership = inspectConsole()
     console.log(`directory : ${configDir()}`)
     console.log(`theme     : ${themeFilePath()}`)
+    console.log(`presets   : ${presetsDir()}`)
     console.log(`config    : ${appConfigFilePath()}`)
     console.log(
       `console   : ${ownership.hasConsole ? `${ownership.attachedProcesses} process(es) attached` : "none"}` +
@@ -220,14 +324,16 @@ async function main(): Promise<void> {
     return
   }
 
-  await run(values.once)
+  await run(values.once, typeof values.preset === "string" ? values.preset : undefined)
 }
 
-main().catch((error: unknown) => {
-  if (error instanceof BootstrapError) {
-    process.stderr.write(`\n${error.message}\n`)
-  } else {
-    process.stderr.write(`\nerror: ${error instanceof Error ? error.message : String(error)}\n`)
-  }
-  process.exitCode = 1
-})
+if (import.meta.main) {
+  main().catch((error: unknown) => {
+    if (error instanceof BootstrapError || error instanceof PresetError) {
+      process.stderr.write(`\n${error.message}\n`)
+    } else {
+      process.stderr.write(`\nerror: ${error instanceof Error ? error.message : String(error)}\n`)
+    }
+    process.exitCode = 1
+  })
+}
